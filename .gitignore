@@ -80,21 +80,21 @@ roboverse/data/motions
 
 *.TXT
 
-sim2real/models/*.onnx
-sim2real/models/dec_loco/*.onnx
+!sim2real/models/*.onnx
+!sim2real/models/dec_loco/*.onnx
 
-roboverse/data/smpl
-data/shape
-data/motions
-roboverse/data/Recorded/
-roboverse/data/AMASS/
-AMASS/*
+!roboverse/data/smpl
+!data/shape
+!data/motions
+!roboverse/data/Recorded/
+!roboverse/data/AMASS/
+!AMASS/*
 
-motion_source/lafan_pkl/
-motion_source/lafan_pkl_cont_mask/
-smpl_retarget/smpl_model/
-smpl_retarget/motion_data/
-smpl_retarget/retargeted_motion_data
+!motion_source/lafan_pkl/
+!motion_source/lafan_pkl_cont_mask/
+!smpl_retarget/smpl_model/
+!smpl_retarget/motion_data/
+!smpl_retarget/retargeted_motion_data
 
 *.txt
 
