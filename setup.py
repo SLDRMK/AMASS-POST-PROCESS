@@ -1,0 +1,48 @@
+from setuptools import find_packages, setup
+
+setup(
+    name='pbhc',
+    version='0.0.1',
+    license="MIT",
+    packages=find_packages(),
+    description='Physics-Based Humanoid motion Control (PBHC)',
+    python_requires=">=3.8",
+    install_requires=[
+        "hydra-core>=1.2.0",
+        "numpy==1.23.5",
+        "mujoco==3.2.3",
+        "mujoco-python-viewer",
+        "rich",
+        "ipdb",
+        "matplotlib",
+        "termcolor",
+        "wandb",
+        "plotly",
+        "tqdm",
+        "loguru",
+        "meshcat",
+        "scipy",
+        "tensorboard",
+        "onnx",
+        "onnxruntime",
+        "opencv-python",
+        "joblib",
+        "easydict",
+        "lxml",
+        "numpy-stl",
+        "open3d",
+        "toolz",
+        'rerun-sdk==0.22.0',
+        'trimesh',
+        'typer',
+        'dm_control',
+        'loop_rate_limiters',
+        'mink',
+        'quadprog',
+        'einops',
+        "chumpy"
+    ],
+    dependency_links=[
+        'git+ssh://git@github.com/ZhengyiLuo/SMPLSim.git@master#egg=SMPLSim'
+    ]
+)
