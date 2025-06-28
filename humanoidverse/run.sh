@@ -85,7 +85,7 @@ python humanoidverse/eval_agent.py \
 python humanoidverse/eval_agent.py \
 +device=cuda:0 \
 +env.config.enforce_randomize_motion_start_eval=False \
-+checkpoint=logs/MotionTracking/20250626_150254-big_dance_clip-motion_tracking-g1_23dof_lock_wrist/model_600.pt
++checkpoint=logs/MotionTracking/20250626_163820-big_dance_clip-motion_tracking-g1_23dof_lock_wrist/model_114400.pt
 
 # ================================
 # Play -- Needs onnx
@@ -103,10 +103,13 @@ python humanoidverse/urci.py \
 export __NV_PRIME_RENDER_OFFLOAD=1
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
+# ================================
+# Big Dance Clip
+# ================================
 python humanoidverse/urci.py \
 +opt=record \
 +simulator=mujoco \
-+checkpoint=logs/MotionTracking/20250624_165713-tennis-motion_tracking-g1_23dof_lock_wrist/exported/model_119200.onnx
++checkpoint=logs/MotionTracking/20250626_163820-big_dance_clip-motion_tracking-g1_23dof_lock_wrist/exported/model_114400.onnx
 
 # ================================
 # Tensorboard

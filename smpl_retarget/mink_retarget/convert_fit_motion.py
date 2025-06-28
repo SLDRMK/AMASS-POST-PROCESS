@@ -96,7 +96,7 @@ def main(
     robot_type: str = 'g1',
     humanoid_type: str = "smpl",
     force_remake: bool = True,
-    force_neutral_body: bool = True,
+    force_neutral_body: bool = False,
     upright_start: bool = False,  # By default, let's start upright (for consistency across all models).
     humanoid_mjcf_path: Optional[str] = "../description/robots/g1/smpl_humanoid.xml",
     force_retarget: bool = True,
@@ -229,6 +229,8 @@ def main(
 
                     betas = motion_data["betas"]
                     gender = motion_data["gender"]
+                    if isinstance(gender, np.ndarray):
+                        gender = gender.item()
                     amass_pose = motion_data["poses"]
                     amass_trans = motion_data["trans"]
                     if humanoid_type == "smplx":
@@ -328,7 +330,7 @@ def main(
                     SMPLX_Parser, 
                 )
                 import joblib
-                smpl_parser_n = SMPL_Parser(model_path="./smpl_model/smpl", gender="neutral")
+                smpl_parser_n = SMPL_Parser(model_path="./smpl_model/smpl", gender=gender)
                 print("smpl_parser_n: ", smpl_parser_n)
                 shape_new, scale = joblib.load(f"./mink_retarget/shape_optimized_neutral.pkl")
                 print("shape_new: ", shape_new)
