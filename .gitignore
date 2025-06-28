@@ -101,3 +101,6 @@ roboverse/data/motions
 logs/
 smpl_retarget/smpl_model/smpl/
 !smpl_retarget/smpl_model/smpl/.gitkeep
+
+motions/gvhmr_example/videos
+!motions/gvhmr_example/videos/.gitkeep

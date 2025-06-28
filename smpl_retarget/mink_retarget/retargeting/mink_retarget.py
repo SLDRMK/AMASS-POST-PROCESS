@@ -461,8 +461,14 @@ PARENT_CHILD_PAIRS = [
     ("right_ankle_roll_link", "right_toe_link"),
 ]
 
-# 相对方向约束权重（较小的权重，避免干扰主要IK）
-RELATIVE_DIRECTION_WEIGHT = 1.0
+# 各类优化目标的全局缩放权重，方便调试
+ROOT_POSITION_SCALE = .0      # 根关节全局位置权重缩放
+ROOT_ORIENTATION_SCALE = .0   # 根关节全局旋转权重缩放
+OTHER_POSITION_SCALE = 1.0     # 其他关节全局位置权重缩放
+OTHER_ORIENTATION_SCALE = 1.0  # 其他关节全局旋转权重缩放
+RELATIVE_POSITION_SCALE = 1.0  # 相对位置约束权重缩放
+RELATIVE_ORIENTATION_SCALE = 1.0  # 相对旋转约束权重缩放
+POSTURE_SCALE = 1.0           # 姿态稳定权重缩放
 
 def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str, render: bool = False):
     global_translations = global_trans.numpy()
@@ -485,37 +491,67 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
             orientation_base_cost = 0
         else:
             orientation_base_cost = 0.0001
+        
+        # 使用原始配置权重，并根据关节类型应用不同的缩放因子
+        if joint_name == "Pelvis":
+            # 根关节使用专门的缩放因子
+            position_cost = 10.0 * retarget_info["weight"] * ROOT_POSITION_SCALE
+            orientation_cost = orientation_base_cost * retarget_info["weight"] * ROOT_ORIENTATION_SCALE
+        else:
+            # 其他关节使用通用的缩放因子
+            position_cost = 10.0 * retarget_info["weight"] * OTHER_POSITION_SCALE
+            orientation_cost = orientation_base_cost * retarget_info["weight"] * OTHER_ORIENTATION_SCALE
+        
         task = mink.FrameTask(
             frame_name=retarget_info["name"],
             frame_type="body",
-            position_cost=10.0 * retarget_info["weight"],
-            orientation_cost=orientation_base_cost * retarget_info["weight"],
+            position_cost=position_cost,
+            orientation_cost=orientation_cost,
             lm_damping=1.0,
         )
         frame_tasks[retarget_info["name"]] = task
     tasks.extend(frame_tasks.values())
 
-    # 添加相对方向约束任务
+    # 添加相对方向约束任务（只为能找到SMPL对应关节的父子对创建任务）
     relative_direction_tasks = {}
+    valid_relative_pairs = []
+    
     for parent_name, child_name in PARENT_CHILD_PAIRS:
         # 检查关节是否存在于机器人模型中
         parent_exists = any(model.body(i).name == parent_name for i in range(model.nbody))
         child_exists = any(model.body(i).name == child_name for i in range(model.nbody))
         
         if parent_exists and child_exists:
-            # 为子关节创建一个额外的位置约束任务，用于相对方向控制
-            relative_task = mink.FrameTask(
-                frame_name=child_name,
-                frame_type="body",
-                position_cost=RELATIVE_DIRECTION_WEIGHT,  # 较小的权重
-                orientation_cost=0.0,  # 不约束方向，只约束相对位置
-                lm_damping=1.0,
-            )
-            relative_direction_tasks[f"{parent_name}_to_{child_name}"] = relative_task
+            # 检查是否能找到对应的SMPL关节名称
+            parent_smpl_name = None
+            child_smpl_name = None
+            
+            # 反向映射：从MuJoCo名称找到对应的SMPL名称
+            for smpl_name, mujoco_info in _KEYPOINT_TO_JOINT_MAP[robot_type].items():
+                if mujoco_info["name"] == parent_name:
+                    parent_smpl_name = smpl_name
+                if mujoco_info["name"] == child_name:
+                    child_smpl_name = smpl_name
+            
+            # 只有当找到了对应的SMPL关节名称时才创建任务
+            if (parent_smpl_name and child_smpl_name and 
+                parent_smpl_name in smplx_mujoco_joint_names and 
+                child_smpl_name in smplx_mujoco_joint_names):
+                
+                # 为子关节创建一个额外的位置和旋转约束任务，用于相对方向和旋转控制
+                relative_task = mink.FrameTask(
+                    frame_name=child_name,
+                    frame_type="body",
+                    position_cost= RELATIVE_POSITION_SCALE,  # 相对位置权重
+                    orientation_cost= RELATIVE_ORIENTATION_SCALE,  # 相对旋转权重
+                    lm_damping=1.0,
+                )
+                relative_direction_tasks[f"{parent_name}_to_{child_name}"] = relative_task
+                valid_relative_pairs.append((parent_name, child_name))
     
     tasks.extend(relative_direction_tasks.values())
 
-    posture_task = mink.PostureTask(model, cost=1.0)
+    posture_task = mink.PostureTask(model, cost=POSTURE_SCALE)
     tasks.append(posture_task)
 
     # Prepare MuJoCo model and data
@@ -607,7 +643,7 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
                 # Set targets for current frame
                 for i, (joint_name, retarget_info) in enumerate(
                     _KEYPOINT_TO_JOINT_MAP[robot_type].items()
-                ):
+                ):                        
                     body_idx = smplx_mujoco_joint_names.index(joint_name)
                     target_pos = global_translations[max(0, t), body_idx, :].copy()
 
@@ -619,75 +655,81 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
                     target_rot = pose_quat_global[max(0, t), body_idx].copy()
                     rot_matrix = sRot.from_quat(target_rot).as_matrix()
                     rot = mink.SO3.from_matrix(rot_matrix)
-                    # set target position
+                    # 为所有任务设置目标，即使是权重为0的子关节任务
                     tasks[i].set_target(
                         mink.SE3.from_rotation_and_translation(rot, target_pos)
                     )
 
-                # 设置相对方向约束目标
+                # 设置相对方向和旋转约束目标
                 relative_task_idx = len(frame_tasks)
-                for parent_name, child_name in PARENT_CHILD_PAIRS:
-                    # 检查关节是否存在于机器人模型中
-                    parent_exists = any(model.body(i).name == parent_name for i in range(model.nbody))
-                    child_exists = any(model.body(i).name == child_name for i in range(model.nbody))
+                for parent_name, child_name in valid_relative_pairs:
+                    # 获取SMPL数据中对应的关节索引
+                    parent_smpl_name = None
+                    child_smpl_name = None
                     
-                    if parent_exists and child_exists:
-                        # 获取SMPL数据中对应的关节索引
-                        parent_smpl_name = None
-                        child_smpl_name = None
-                        
-                        # 反向映射：从MuJoCo名称找到对应的SMPL名称
-                        for smpl_name, mujoco_info in _KEYPOINT_TO_JOINT_MAP[robot_type].items():
-                            if mujoco_info["name"] == parent_name:
-                                parent_smpl_name = smpl_name
-                            if mujoco_info["name"] == child_name:
-                                child_smpl_name = smpl_name
-                        
-                        # 如果找到了对应的SMPL关节名称
-                        if (parent_smpl_name and child_smpl_name and 
-                            parent_smpl_name in smplx_mujoco_joint_names and 
-                            child_smpl_name in smplx_mujoco_joint_names):
-                            
-                            parent_idx = smplx_mujoco_joint_names.index(parent_smpl_name)
-                            child_idx = smplx_mujoco_joint_names.index(child_smpl_name)
-                            
-                            # 计算SMPL数据中的相对方向向量
-                            parent_pos = global_translations[max(0, t), parent_idx]
-                            child_pos = global_translations[max(0, t), child_idx]
-                            relative_dir = child_pos - parent_pos
-                            
-                            # 归一化相对方向向量，只保留方向信息，不考虑距离
-                            relative_dir_norm = np.linalg.norm(relative_dir)
-                            if relative_dir_norm > 1e-6:  # 避免除零错误
-                                relative_dir_unit = relative_dir / relative_dir_norm
-                            else:
-                                relative_dir_unit = np.array([0.0, 0.0, 1.0])  # 默认向上方向
-                            
-                            # 设定一个固定的距离长度（可以根据机器人尺寸调整）
-                            fixed_distance = 0.3  # 30cm，可以根据需要调整
-                            relative_dir_scaled = relative_dir_unit * fixed_distance
-                            
-                            # 应用缩放因子
-                            if robot_type in _RESCALE_FACTOR:
-                                relative_dir_scaled *= _RESCALE_FACTOR[robot_type]
-                            
-                            # 计算目标子关节位置（父关节位置 + 归一化的相对方向向量）
-                            parent_target_pos = global_translations[max(0, t), parent_idx].copy()
-                            if robot_type in _RESCALE_FACTOR:
-                                parent_target_pos *= _RESCALE_FACTOR[robot_type]
-                            if robot_type in _OFFSET:
-                                parent_target_pos[2] += _OFFSET[robot_type]
-                            
-                            child_target_pos = parent_target_pos + relative_dir_scaled
-                            
-                            # 设置相对方向约束目标（只约束位置，不约束旋转）
-                            tasks[relative_task_idx].set_target(
-                                mink.SE3.from_rotation_and_translation(
-                                    mink.SO3.identity(),  # 不约束旋转
-                                    child_target_pos
-                                )
-                            )
-                            relative_task_idx += 1
+                    # 反向映射：从MuJoCo名称找到对应的SMPL名称
+                    for smpl_name, mujoco_info in _KEYPOINT_TO_JOINT_MAP[robot_type].items():
+                        if mujoco_info["name"] == parent_name:
+                            parent_smpl_name = smpl_name
+                        if mujoco_info["name"] == child_name:
+                            child_smpl_name = smpl_name
+                    
+                    parent_idx = smplx_mujoco_joint_names.index(parent_smpl_name)
+                    child_idx = smplx_mujoco_joint_names.index(child_smpl_name)
+                    
+                    # 计算SMPL数据中的相对方向向量
+                    parent_pos = global_translations[max(0, t), parent_idx]
+                    child_pos = global_translations[max(0, t), child_idx]
+                    relative_dir = child_pos - parent_pos
+                    
+                    # 归一化相对方向向量，只保留方向信息，不考虑距离
+                    relative_dir_norm = np.linalg.norm(relative_dir)
+                    if relative_dir_norm > 1e-6:  # 避免除零错误
+                        relative_dir_unit = relative_dir / relative_dir_norm
+                    else:
+                        relative_dir_unit = np.array([0.0, 0.0, 1.0])  # 默认向上方向
+                    
+                    # 设定一个固定的距离长度（可以根据机器人尺寸调整）
+                    fixed_distance = 0.3  # 30cm，可以根据需要调整
+                    relative_dir_scaled = relative_dir_unit * fixed_distance
+                    
+                    # 应用缩放因子
+                    if robot_type in _RESCALE_FACTOR:
+                        relative_dir_scaled *= _RESCALE_FACTOR[robot_type]
+                    
+                    # 获取当前机器人父关节的实际位置
+                    parent_body_id = model.body(parent_name).id
+                    current_parent_pos = data.xpos[parent_body_id].copy()
+                    
+                    # 计算目标子关节位置（当前父关节位置 + 归一化的相对方向向量）
+                    child_target_pos = current_parent_pos + relative_dir_scaled
+                    
+                    # 计算SMPL数据中的相对旋转
+                    parent_rot = pose_quat_global[max(0, t), parent_idx].copy()
+                    child_rot = pose_quat_global[max(0, t), child_idx].copy()
+                    
+                    # 计算相对旋转：child_rot * parent_rot^(-1)
+                    parent_rot_obj = sRot.from_quat(parent_rot)
+                    child_rot_obj = sRot.from_quat(child_rot)
+                    relative_rot = child_rot_obj * parent_rot_obj.inv()
+                    
+                    # 获取当前机器人父关节的实际姿态
+                    current_parent_rot_matrix = data.xmat[parent_body_id].reshape(3, 3)
+                    current_parent_rot_obj = sRot.from_matrix(current_parent_rot_matrix)
+                    
+                    # 将SMPL相对旋转应用到当前机器人父关节上
+                    child_target_rot_obj = relative_rot * current_parent_rot_obj
+                    child_target_rot_matrix = child_target_rot_obj.as_matrix()
+                    
+                    # 设置相对方向和旋转约束目标
+                    child_target_rot = mink.SO3.from_matrix(child_target_rot_matrix)
+                    tasks[relative_task_idx].set_target(
+                        mink.SE3.from_rotation_and_translation(
+                            child_target_rot,  # 约束旋转
+                            child_target_pos   # 约束位置
+                        )
+                    )
+                    relative_task_idx += 1
 
                 # Update keypoint positions.
                 keypoint_pos = {}
