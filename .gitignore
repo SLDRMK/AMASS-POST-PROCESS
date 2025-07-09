@@ -104,3 +104,5 @@ smpl_retarget/smpl_model/smpl/
 
 motions/gvhmr_example/videos
 !motions/gvhmr_example/videos/.gitkeep
+
+motions/gvhmr_example/videos-g1_retargeted_npy

@@ -77,6 +77,18 @@ def determine_obs_dim(config) -> None:
                 
     config.robot.algo_obs_dim_dict = obs_dim_dict
     logger.info(f"algo_obs_dim_dict: {config.robot.algo_obs_dim_dict}")
+    
+    # Debug打印观测维度信息
+    actor_obs_dim = obs_dim_dict.get('actor_obs', 0)
+    critic_obs_dim = obs_dim_dict.get('critic_obs', 0)
+    print(f"[DEBUG] actor_obs total dim: {actor_obs_dim}")
+    print(f"[DEBUG] critic_obs total dim: {critic_obs_dim}")
+    print(f"[DEBUG] algo_obs_dim_dict: {config.robot.algo_obs_dim_dict}")
+    
+    # 计算第二阶段delta policy的输入维度
+    delta_policy_input_dim = actor_obs_dim + 23  # actor_obs + 第一阶段输出动作
+    print(f"[DEBUG] Stage 2 delta policy input dim: {delta_policy_input_dim}")
+    
     return obs_dim_dict, each_dict_obs_dims, auxiliary_obs_dims
 
 def pre_process_config(config) -> None:
@@ -122,6 +134,7 @@ def pre_process_config(config) -> None:
         config.obs.motion_file = None
     # print the config
     logger.debug(f"PPO CONFIG")
+    print(f"[DEBUG] pre_process_config: algo_obs_dim_dict: {config.robot.algo_obs_dim_dict if hasattr(config.robot, 'algo_obs_dim_dict') else None}")
 
 def parse_observation(cls: Any, 
                       key_list: List, 

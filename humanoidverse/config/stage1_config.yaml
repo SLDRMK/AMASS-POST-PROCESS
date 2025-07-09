@@ -1,0 +1,118 @@
+# 第一阶段训练配置：只训练主策略
+# 复制基本配置并修改算法为双策略PPO
+
+defaults:
+  - base
+  - /exp: motion_tracking
+  - /simulator: isaacgym
+  - /terrain: terrain_locomotion_plane
+  - /obs: motion_tracking/benchmark
+  - /robot: g1/g1_23dof_lock_wrist
+  - /domain_rand: dr_nil
+  - /rewards: motion_tracking/main
+  - override /algo: dual_policy_ppo
+  - _self_
+
+# 基本设置
+seed: 1
+codebase_version: 1.0
+headless: true
+num_envs: 128  # 与命令行保持一致
+auto_load_latest: false
+checkpoint: null
+project_name: MotionTracking
+experiment_name: benchmark
+base_dir: logs
+timestamp: ${now:%Y%m%d_%H%M%S}
+experiment_dir: ${base_dir}/${project_name}/${timestamp}-${experiment_name}
+save_dir: ${experiment_dir}/.hydra
+force_flat_terrain: false
+use_wandb: false
+log_task_name: motion_tracking
+sim_type: isaacgym
+env_spacing: 20
+output_dir: ${experiment_dir}/output
+device: cuda:0
+
+# 机器人运动配置
+robot:
+  num_key_bodies: 2  # 手动设置避免len插值问题
+  motion:
+    motion_file: "example/motion_data/Horse-stance_pose.pkl"
+
+# 覆盖obs配置中的eval插值
+obs:
+  actor_obs_list:
+    - dof_pos: ${robot.dof_obs_size}
+    - dof_vel: ${robot.dof_obs_size}
+    - local_ref_pose: 13  # 固定值
+    - dif_local_rigid_body_pos: 81  # 3 * 24 + 9 = 81 (手动计算避免eval)
+    - local_ref_rigid_body_pos: 81  # 3 * 24 + 9 = 81 (手动计算避免eval)
+    # 其他obs保持默认值
+
+# 第一阶段特定配置
+current_stage: 1
+freeze_policy: false     # 训练主策略
+freeze_delta: true       # 冻结增量策略
+stage_iterations: [2000, 2000, 2000]  # 减少迭代次数用于调试
+pretrained_policy_path: null
+
+# 双策略PPO算法配置
+algo:
+  _target_: humanoidverse.agents.dual_policy_ppo.dual_policy_ppo.DualPolicyPPO
+  _recursive_: false
+  
+  # 双策略特定配置
+  freeze_policy: false     # 训练主策略
+  freeze_delta: true       # 冻结增量策略
+  
+  # 基础PPO配置
+  save_interval: 100
+  logging_interval: 10
+  num_steps_per_env: 24
+  load_optimizer: true
+  num_learning_iterations: 2000  # 调试用的较少迭代
+  init_at_random_ep_len: true
+  
+  # 算法参数
+  desired_kl: 0.01
+  schedule: adaptive
+  actor_learning_rate: 3.0e-4
+  critic_learning_rate: 1.0e-3
+  clip_param: 0.2
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  gamma: 0.99
+  lam: 0.95
+  value_loss_coef: 1.0
+  entropy_coef: 0.01
+  max_grad_norm: 1.0
+  use_clipped_value_loss: true
+  init_noise_std: 1.0
+  
+  # 网络模块配置
+  module_dict:
+    actor:
+      input_dim: [actor_obs]
+      output_dim: [robot_action_dim]
+      layer_config:
+        type: MLP
+        hidden_dims: [512, 256, 128]
+        activation: ELU
+    critic:
+      input_dim: [critic_obs]
+      output_dim: [num_rew_fn]
+      layer_config:
+        type: MLP
+        hidden_dims: [512, 256, 128]
+        activation: ELU
+
+# 评估配置
+eval_overrides:
+  headless: false
+  num_envs: 1
+  auto_load_latest: false
+  use_wandb: false
+  env:
+    config:
+      max_episode_length_s: 100000 

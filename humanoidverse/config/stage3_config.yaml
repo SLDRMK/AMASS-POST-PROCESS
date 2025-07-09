@@ -1,0 +1,96 @@
+hydra:
+  strict: false
+
+# 第三阶段训练配置：冻结增量策略，训练主策略
+
+log_dir: null
+
+defaults:
+  - base
+  - /exp: motion_tracking
+  - /simulator: isaacgym
+  - /terrain: terrain_locomotion_plane
+  - /obs: motion_tracking/main  # 使用主观测配置
+  - /robot: g1/g1_23dof_lock_wrist
+  - /domain_rand: dr_nil
+  - /rewards: motion_tracking/main  # 使用原始奖励配置
+  - override /algo: dual_policy_ppo
+  - _self_
+
+# 基本设置
+seed: 1
+codebase_version: 1.0
+headless: true
+num_envs: 64
+auto_load_latest: false
+checkpoint: null
+project_name: DualPolicyStage3Test
+experiment_name: stage3_test
+base_dir: logs
+timestamp: ${now:%Y%m%d_%H%M%S}
+experiment_dir: ${base_dir}/${project_name}/${timestamp}-${experiment_name}
+save_dir: ${experiment_dir}/.hydra
+force_flat_terrain: false
+use_wandb: false
+log_task_name: motion_tracking
+sim_type: isaacgym
+env_spacing: 20
+output_dir: ${experiment_dir}/output
+device: cuda:0
+
+# 机器人运动配置
+robot:
+  _merge_: merge
+  num_key_bodies: 2  # 手动设置避免len插值问题
+  actions_dim: 23
+  policy_obs_dim: 81
+  critic_obs_dim: 81
+  motion:
+    motion_file: "example/motion_data/Horse-stance_pose.pkl"
+  dof_obs_size: 23
+
+# 第三阶段特定配置
+current_stage: 3
+freeze_policy: false      # 训练主策略
+freeze_delta: true        # 冻结增量策略
+stage_iterations: [2000, 2000, 2000]
+pretrained_policy_path: null  # 将在运行时设置
+stage_2_checkpoint: null  # 将在运行时设置
+
+# 算法配置覆盖
+algo:
+  freeze_policy: false      # 训练主策略
+  freeze_delta: true        # 冻结增量策略
+  current_stage: 3
+  stage_2_checkpoint: null
+  num_learning_iterations: 100  # 测试用的较少迭代
+  save_interval: 20
+  logging_interval: 5
+  
+  config:
+    # 网络模块配置 - 确保与第一阶段匹配
+    module_dict:
+      actor:
+        input_dim: [actor_obs]
+        output_dim: [robot_action_dim]
+        layer_config:
+          type: MLP
+          hidden_dims: [512, 256, 128]
+          activation: ELU
+      critic:
+        input_dim: [critic_obs]
+        output_dim: [num_rew_fn]
+        layer_config:
+          type: MLP
+          hidden_dims: [768, 512, 128]
+          activation: ELU
+
+# 评估配置
+eval_overrides:
+  headless: false
+  num_envs: 1
+  auto_load_latest: false
+  use_wandb: false
+  env:
+    config:
+      max_episode_length_s: 100000 

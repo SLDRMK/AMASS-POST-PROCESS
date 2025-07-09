@@ -462,8 +462,8 @@ PARENT_CHILD_PAIRS = [
 ]
 
 # 各类优化目标的全局缩放权重，方便调试
-ROOT_POSITION_SCALE = .0      # 根关节全局位置权重缩放
-ROOT_ORIENTATION_SCALE = .0   # 根关节全局旋转权重缩放
+ROOT_POSITION_SCALE = 0.3      # 根关节全局位置权重缩放
+ROOT_ORIENTATION_SCALE = 0.3   # 根关节全局旋转权重缩放
 OTHER_POSITION_SCALE = 1.0     # 其他关节全局位置权重缩放
 OTHER_ORIENTATION_SCALE = 1.0  # 其他关节全局旋转权重缩放
 RELATIVE_POSITION_SCALE = 1.0  # 相对位置约束权重缩放

@@ -1,0 +1,94 @@
+# @package _global_
+
+# Delta rewards configuration for dual policy training stage 2 (frozen first policy, training second policy)
+# This configuration is specifically designed for the second stage of three-stage training
+
+rewards:
+  set_reward: Delta_DualPolicy
+  set_reward_date: 20250108
+  only_positive_rewards: False
+  reward_scales:
+      # 相对于基础配置，增强运动跟踪奖励权重，鼓励第二个策略学习精细动作
+      teleop_body_position_extend: 2.0      # 增强身体位置跟踪
+      teleop_vr_3point: 2.0                 # 增强3点VR跟踪
+      teleop_body_position_feet: 2.0        # 增强脚部位置跟踪
+      teleop_body_rotation_extend: 1.0      # 增强身体旋转跟踪
+      teleop_body_ang_velocity_extend: 1.0  # 增强角速度跟踪
+      teleop_body_velocity_extend: 1.0      # 增强速度跟踪
+      teleop_joint_position: 1.0            # 增强关节位置跟踪
+      teleop_joint_velocity: 1.0            # 增强关节速度跟踪
+      
+      # 减小惩罚项权重，允许第二个策略更自由地学习
+      penalty_torques: -0.0000005           # 减半力矩惩罚
+      penalty_action_rate: -0.0005          # 减半动作变化率惩罚
+      
+      # 保持安全约束
+      limits_dof_pos: -10.0
+      limits_dof_vel: -5.0
+      limits_torque: -0.1
+      termination: -200.0
+
+  # 调整身体部位权重，更注重精细控制
+  teleop_body_pos_lowerbody_weight: 0.7    # 增加下身权重
+  teleop_body_pos_upperbody_weight: 1.2    # 增加上身权重
+
+  reward_tracking_sigma:
+    # 减小sigma值，要求更精确的跟踪
+    teleop_upper_body_pos: 0.02   # 更严格的上身位置要求
+    teleop_lower_body_pos: 0.08   # 更严格的下身位置要求
+    teleop_vr_3point_pos: 0.02    # 更严格的3点VR要求
+    teleop_feet_pos: 0.02         # 更严格的脚部位置要求
+
+    teleop_body_rot: 0.8          # 更严格的旋转要求
+    teleop_body_vel: 0.8          # 更严格的速度要求
+    teleop_body_ang_vel: 0.8      # 更严格的角速度要求
+    teleop_joint_pos: 0.8         # 更严格的关节位置要求
+    teleop_joint_vel: 0.8         # 更严格的关节速度要求
+
+  reward_limit:
+    soft_dof_pos_limit: 0.95
+    soft_dof_vel_limit: 0.95
+    soft_torque_limit: 0.95
+
+    reward_limits_curriculum:
+      soft_dof_pos_curriculum: False
+      soft_dof_pos_initial_limit: 1.25
+      soft_dof_pos_max_limit: 1.25
+      soft_dof_pos_min_limit: 0.95
+      soft_dof_pos_curriculum_degree: 0.0000003
+      soft_dof_pos_curriculum_level_down_threshold: 40
+      soft_dof_pos_curriculum_level_up_threshold: 42
+
+      soft_dof_vel_curriculum: False
+      soft_dof_vel_initial_limit: 1.25
+      soft_dof_vel_max_limit: 1.25
+      soft_dof_vel_min_limit: 0.95
+      soft_dof_vel_curriculum_degree: 0.0000003
+      soft_dof_vel_curriculum_level_down_threshold: 40
+      soft_dof_vel_curriculum_level_up_threshold: 42
+
+      soft_torque_curriculum: False
+      soft_torque_initial_limit: 1.25
+      soft_torque_max_limit: 1.25
+      soft_torque_min_limit: 0.85
+      soft_torque_curriculum_degree: 0.0000003
+      soft_torque_curriculum_level_down_threshold: 40
+      soft_torque_curriculum_level_up_threshold: 42
+
+  reward_penalty_curriculum: False
+  reward_initial_penalty_scale: 0.05      # 减小初始惩罚比例
+  reward_min_penalty_scale: 0.0
+  reward_max_penalty_scale: 0.8           # 减小最大惩罚比例
+  reward_penalty_level_down_threshold: 50
+  reward_penalty_level_up_threshold: 100
+  reward_penalty_degree: 0.00001
+  num_compute_average_epl: 10000
+
+  reward_penalty_reward_names: [
+    "penalty_torques",
+    "penalty_dof_acc",
+    "penalty_dof_vel",
+    "penalty_action_rate",
+    "limits_dof_pos",
+    "limits_dof_vel",
+    "limits_torque"] 

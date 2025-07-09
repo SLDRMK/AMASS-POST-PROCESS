@@ -1,0 +1,53 @@
+# @package _global_
+
+algo:
+  _target_: humanoidverse.agents.dual_policy_ppo.dual_policy_ppo.DualPolicyPPO
+  _recursive_: False
+  config:
+    stage_2_checkpoint: null
+    log_dir: null
+    # 双策略特定配置
+    freeze_policy: true      # 是否冻结主策略
+    freeze_delta: false     # 是否冻结增量策略
+    current_stage: 1         # 当前训练阶段
+
+    # 基础PPO配置
+    num_learning_epochs: 5
+    num_mini_batches: 4
+    clip_param: 0.2
+    gamma: 0.99
+    lam: 0.95
+    value_loss_coef: 1.0
+    entropy_coef: 0.01
+    actor_learning_rate: 1.0e-3
+    critic_learning_rate: 1.0e-3
+    max_grad_norm: 1.0
+    use_clipped_value_loss: true
+    schedule: adaptive
+    desired_kl: 0.01
+    num_steps_per_env: 24
+    save_interval: 50
+    logging_interval: 10
+    load_optimizer: true
+    init_noise_std: 1.0
+    num_learning_iterations: 1500
+    init_at_random_ep_len: true
+    eval_callbacks: null
+
+    # 网络模块配置
+    module_dict:
+      actor:
+        input_dim: [actor_obs]
+        output_dim: [robot_action_dim]
+        layer_config:
+          type: MLP
+          hidden_dims: [512, 256, 128]
+          activation: ELU
+          
+      critic:
+        input_dim: [critic_obs]
+        output_dim: [num_rew_fn]
+        layer_config:
+          type: MLP
+          hidden_dims: [512, 256, 128]
+          activation: ELU 
