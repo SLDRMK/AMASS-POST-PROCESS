@@ -5,7 +5,7 @@ algo:
   _recursive_: False
   config:
     stage_2_checkpoint: null
-    log_dir: null
+    log_dir: logs/
     # 双策略特定配置
     freeze_policy: true      # 是否冻结主策略
     freeze_delta: false     # 是否冻结增量策略

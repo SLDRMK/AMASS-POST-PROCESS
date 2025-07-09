@@ -7,13 +7,14 @@
 3. 第三阶段：冻结第二个策略，训练第一个策略，使用原始奖励配置，输出为两个策略的和
 """
 
+import os
+
 # 首先导入isaacgym以避免导入顺序问题
 import isaacgym
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
-import os
 from loguru import logger
 
 from hydra.utils import instantiate
@@ -22,7 +23,7 @@ from humanoidverse.utils.helpers import pre_process_config
 import torch
 
 
-@hydra.main(version_base="1.1", config_path="humanoidverse/config", config_name="stage2_config")
+@hydra.main(version_base="1.1", config_path="../config", config_name="stage2.yaml")
 def main(cfg: DictConfig) -> None:
     print('DEBUG: config keys:', list(cfg.keys()))
     logger.info("Starting Three-Stage Dual Policy PPO Training for Horse Stance")
@@ -30,8 +31,10 @@ def main(cfg: DictConfig) -> None:
     # 根据当前阶段选择配置文件
     current_stage = cfg.get('current_stage', 2)
     if current_stage == 1:
-        # 第一阶段：使用stage1_config
-        stage1_cfg = OmegaConf.load("humanoidverse/config/stage1_config.yaml")
+        # 第一阶段：使用stage1.yaml
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, "../config/stage1.yaml")
+        stage1_cfg = OmegaConf.load(config_path)
         # 合并命令行覆盖
         cfg = OmegaConf.merge(stage1_cfg, cfg)
     
