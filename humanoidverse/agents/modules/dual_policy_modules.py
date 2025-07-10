@@ -1,229 +1,29 @@
+from __future__ import annotations
+from copy import deepcopy
+
+from typing import List
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from copy import deepcopy
-from typing import Tuple
 
 from .modules import BaseModule
-from .ppo_modules import PPOActor
 
-
-class DualPolicyActor(nn.Module):
-    """
-    双策略Actor网络
-    
-    架构：
-    - Policy策略：主策略网络，负责基础动作生成
-    - Delta策略：增量策略网络，负责动作精细调整
-    
-    参数：
-    - freeze_policy: 是否冻结主策略
-    - freeze_delta: 是否冻结增量策略
-    """
-    
+class DualPPOActor(nn.Module):
     def __init__(self,
-                 obs_dim_dict,
-                 module_config_dict,
-                 num_actions,
-                 init_noise_std,
-                 freeze_policy=True,
-                 freeze_delta=False):
-        super(DualPolicyActor, self).__init__()
-        
-        self.num_actions = num_actions
-        self.freeze_policy_flag = freeze_policy
-        self.freeze_delta_flag = freeze_delta
-        print(f"[DEBUG] DualPolicyActor: policy obs_dim: {obs_dim_dict.get('actor_obs', 0)}")
-        
-        # 主策略：标准的PPO Actor
-        self.policy = PPOActor(
-            obs_dim_dict=obs_dim_dict,
-            module_config_dict=deepcopy(module_config_dict),
-            num_actions=num_actions,
-            init_noise_std=init_noise_std
-        )
-        
-        # 增量策略：接收观测 + 主策略输出
-        delta_obs_dim_dict = deepcopy(obs_dim_dict)
-        actor_obs_dim = delta_obs_dim_dict.get("actor_obs", 0)
-        delta_obs_dim_dict["actor_obs"] = actor_obs_dim + num_actions
-        print(f"[DEBUG] DualPolicyActor: delta obs_dim: {delta_obs_dim_dict['actor_obs']}")
-        
-        self.delta = DeltaPolicyActor(
-            obs_dim_dict=delta_obs_dim_dict,
-            module_config_dict=deepcopy(module_config_dict),
-            num_actions=num_actions,
-            init_noise_std=init_noise_std
-        )
-        
-        # 冻结相应的策略
-        if self.freeze_policy_flag:
-            self._freeze_policy(self.policy)
-        if self.freeze_delta_flag:
-            self._freeze_policy(self.delta)
-            
-        self.distribution = None
-        Normal.set_default_validate_args = False
+                obs_dim_dict,
+                module_config_dict,
+                num_actions,
+                init_noise_std):
+        super(DualPPOActor, self).__init__()
 
-    def _freeze_policy(self, policy):
-        """冻结策略参数"""
-        for param in policy.parameters():
-            param.requires_grad = False
-        policy.eval()
-
-    def _unfreeze_policy(self, policy):
-        """解冻策略参数"""
-        for param in policy.parameters():
-            param.requires_grad = True
-        policy.train()
-
-    def freeze_policy(self):
-        """冻结主策略参数"""
-        self.freeze_policy_flag = True
-        self._freeze_policy(self.policy)
-        self.policy.eval()
-
-    def unfreeze_policy(self):
-        """解冻主策略参数"""
-        self.freeze_policy_flag = False
-        self._unfreeze_policy(self.policy)
-        self.policy.train()
-
-    def freeze_delta(self):
-        """冻结增量策略参数"""
-        self.freeze_delta_flag = True
-        self._freeze_policy(self.delta)
-        self.delta.eval()
-
-    def unfreeze_delta(self):
-        """解冻增量策略参数"""
-        self.freeze_delta_flag = False
-        self._unfreeze_policy(self.delta)
-        self.delta.train()
-
-    def reset(self, dones=None):
-        self.policy.reset(dones)
-        self.delta.reset(dones)
-
-    def act(self, actor_obs, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        三阶段动作生成：
-        - 第一阶段：只用policy(actor_obs)作为action
-        - 第二、三阶段：action = policy(actor_obs) + delta(concat(actor_obs, policy(actor_obs)))
-        返回:
-        - actions: 最终动作
-        - policy_output: 主策略的输出
-        """
-        # 主策略生成初始动作
-        policy_output = self.policy.act(actor_obs, **kwargs)
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            # 第一阶段：只用policy输出
-            self.distribution = self.policy.distribution
-            return policy_output, policy_output
-        else:
-            # 第二、三阶段：policy + delta
-            combined_obs = torch.cat([actor_obs, policy_output], dim=-1)
-            delta_output = self.delta.act(combined_obs, **kwargs)
-            final_actions = policy_output + delta_output
-            self.distribution = self.delta.distribution
-            return final_actions, policy_output
-
-    def act_inference(self, actor_obs) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        三阶段推理动作生成
-        """
-        policy_output = self.policy.act_inference(actor_obs)
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            # 第一阶段：只用policy输出
-            return policy_output, policy_output
-        else:
-            combined_obs = torch.cat([actor_obs, policy_output], dim=-1)
-            delta_output = self.delta.act_inference(combined_obs)
-            final_actions = policy_output + delta_output
-            return final_actions, policy_output
-
-    def get_actions_log_prob(self, actions):
-        """获取动作的对数概率"""
-        # 第一阶段log_prob来自policy，后两阶段来自delta
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            return self.policy.get_actions_log_prob(actions)
-        else:
-            return self.delta.get_actions_log_prob(actions)
-
-    @property
-    def action_mean(self):
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            return self.policy.action_mean
-        else:
-            return self.delta.action_mean
-
-    @property
-    def action_std(self):
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            return self.policy.action_std
-        else:
-            return self.delta.action_std
-
-    @property
-    def entropy(self):
-        if getattr(self, 'current_stage', 1) == 1 or getattr(self, 'freeze_delta_flag', True):
-            return self.policy.entropy
-        else:
-            return self.delta.entropy
-
-    def train(self, mode=True):
-        """设置训练模式"""
-        super().train(mode)
-        
-        # 根据冻结状态设置各策略的模式
-        if not self.freeze_policy_flag:
-            self.policy.train(mode)
-        else:
-            self.policy.eval()
-            
-        if not self.freeze_delta_flag:
-            self.delta.train(mode)
-        else:
-            self.delta.eval()
-
-    def eval(self):
-        """设置评估模式"""
-        super().eval()
-        self.policy.eval()
-        self.delta.eval()
-
-    def switch_training_policy(self):
-        """切换训练的策略"""
-        self.freeze_policy_flag = not self.freeze_policy_flag
-        self.freeze_delta_flag = not self.freeze_delta_flag
-        
-        if self.freeze_policy_flag:
-            self._freeze_policy(self.policy)
-            self._unfreeze_policy(self.delta)
-        else:
-            self._unfreeze_policy(self.policy)
-            self._freeze_policy(self.delta)
-
-
-class DeltaPolicyActor(nn.Module):
-    """
-    增量策略Actor，接收观测和主策略的输出
-    """
-    
-    def __init__(self,
-                 obs_dim_dict,
-                 module_config_dict,
-                 num_actions,
-                 init_noise_std):
-        super(DeltaPolicyActor, self).__init__()
-        
         module_config_dict = self._process_module_config(module_config_dict, num_actions)
-        
+
         self.actor_module = BaseModule(obs_dim_dict, module_config_dict)
-        
+
         # Action noise
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         self.distribution = None
+        # disable args validation for speedup
         Normal.set_default_validate_args = False
 
     def _process_module_config(self, module_config_dict, num_actions):
@@ -235,10 +35,19 @@ class DeltaPolicyActor(nn.Module):
     @property
     def actor(self):
         return self.actor_module
+    
+    @staticmethod
+    # not used at the moment
+    def init_weights(sequential, scales):
+        [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
+         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
 
     def reset(self, dones=None):
         pass
 
+    def forward(self):
+        raise NotImplementedError
+    
     @property
     def action_mean(self):
         return self.distribution.mean
@@ -246,187 +55,462 @@ class DeltaPolicyActor(nn.Module):
     @property
     def action_std(self):
         return self.distribution.stddev
-
+    
     @property
     def entropy(self):
         return self.distribution.entropy().sum(dim=-1)
 
-    def update_distribution(self, combined_obs):
-        """更新动作分布"""
-        mean = self.actor(combined_obs)
-        self.distribution = Normal(mean, mean * 0. + self.std)
+    def update_distribution(self, actor_obs):
+        mean = self.actor(actor_obs)
+        self.distribution = Normal(mean, mean*0. + self.std)
 
-    def act(self, combined_obs, **kwargs):
-        """生成动作"""
-        self.update_distribution(combined_obs)
+    def act(self, actor_obs, **kwargs):
+        self.update_distribution(actor_obs)
         return self.distribution.sample()
-
+    
     def get_actions_log_prob(self, actions):
-        """获取动作的对数概率"""
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, combined_obs):
-        """推理模式的动作生成"""
-        actions_mean = self.actor(combined_obs)
+    def act_inference(self, actor_obs):
+        actions_mean = self.actor(actor_obs)
         return actions_mean
-
-
-class DualPolicyCritic(nn.Module):
-    """
-    双策略Critic网络（可选）
-    可以为每个策略单独设计价值函数
-    """
     
+    def to_cpu(self):
+        self.actor = deepcopy(self.actor).to('cpu')
+        self.std.to('cpu')
+
+class PPOCritic(nn.Module):
     def __init__(self,
-                 obs_dim_dict,
-                 module_config_dict,
-                 use_dual_critics=False):
-        super(DualPolicyCritic, self).__init__()
-        
-        self.use_dual_critics = use_dual_critics
-        
-        if use_dual_critics:
-            # 为每个策略创建单独的critic
-            self.first_critic = BaseModule(obs_dim_dict, deepcopy(module_config_dict))
-            self.second_critic = BaseModule(obs_dim_dict, deepcopy(module_config_dict))
-        else:
-            # 共享的critic
-            self.critic_module = BaseModule(obs_dim_dict, module_config_dict)
+                obs_dim_dict,
+                module_config_dict):
+        super(PPOCritic, self).__init__()
+
+        self.critic_module = BaseModule(obs_dim_dict, module_config_dict)
 
     @property
     def critic(self):
-        if self.use_dual_critics:
-            return self.second_critic  # 默认使用第二个critic
-        else:
-            return self.critic_module
+        return self.critic_module
+    
+    def reset(self, dones=None):
+        pass
+    
+    def evaluate(self, critic_obs, **kwargs):
+        value = self.critic(critic_obs)
+        return value
+
+class GPOPolicy(nn.Module):
+    def __init__(self,
+                obs_dim_dict,
+                module_config_dict,
+                num_actions,
+                init_noise_std):
+        super(GPOPolicy, self).__init__()
+
+        module_config_dict = self._process_module_config(module_config_dict, num_actions)
+
+        obs_dim_dict_ = self.generate_full_obs_dict(obs_dim_dict)
+
+        self.policy_module = BaseModule(obs_dim_dict_, module_config_dict)
+
+        # Action noise
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.distribution = None
+        # disable args validation for speedup
+        Normal.set_default_validate_args = False
+
+    def _process_module_config(self, module_config_dict, num_actions):
+        for idx, output_dim in enumerate(module_config_dict['output_dim']):
+            if output_dim == 'robot_action_dim':
+                module_config_dict['output_dim'][idx] = num_actions
+        return module_config_dict
+    
+    def generate_full_obs_dict(self,obs_dim_dict):
+        actor_dim = obs_dim_dict.get("actor_obs", 0)
+        critic_dim = obs_dim_dict.get("critic_obs", 0)
+        obs_dim_dict["full_obs"] = actor_dim + critic_dim + 1
+        return obs_dim_dict
+    
+    @property
+    def policy(self):
+        return self.policy_module
+    
+    @staticmethod
+    # not used at the moment
+    def init_weights(sequential, scales):
+        [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
+         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
 
     def reset(self, dones=None):
         pass
 
-    def evaluate(self, critic_obs, use_first_critic=False, **kwargs):
-        """评估价值函数"""
-        if self.use_dual_critics:
-            if use_first_critic:
-                value = self.first_critic(critic_obs)
-            else:
-                value = self.second_critic(critic_obs)
+    def forward(self):
+        raise NotImplementedError
+    
+    @property
+    def action_mean(self):
+        return self.distribution.mean
+
+    @property
+    def action_std(self):
+        return self.distribution.stddev
+    
+    @property
+    def entropy(self):
+        return self.distribution.entropy().sum(dim=-1)
+
+    def update_distribution(self, obs, is_guider=False):
+        # input obs is a dict with keys "actor_obs", "critic_obs" or "full_obs"
+        if is_guider:
+            indicator = torch.ones(obs["actor_obs"].shape[:-1] + (1,), device=obs["actor_obs"].device)
+            obs_input = torch.cat([obs["actor_obs"], obs["critic_obs"], indicator], dim=-1)
         else:
-            value = self.critic_module(critic_obs)
+            indicator = torch.zeros(obs["actor_obs"].shape[:-1] + (1,), device=obs["actor_obs"].device)
+            obs_input = torch.cat([obs["actor_obs"], torch.zeros_like(obs["critic_obs"]), indicator], dim=-1)
+
+        mean = self.policy(obs_input)
+        self.distribution = Normal(mean, mean*0. + self.std)
+
+    def act(self, obs, is_guider=False,**kwargs):
+        self.update_distribution(obs, is_guider)
+        return self.distribution.sample()
+    
+    def get_actions_log_prob(self, actions):
+        return self.distribution.log_prob(actions).sum(dim=-1)
+
+    def act_inference(self, obs):
+        # use learner obs
+        indicator = torch.zeros(obs["actor_obs"].shape[:-1] + (1,), device=obs["actor_obs"].device)
+        obs_input = torch.cat([obs["actor_obs"], torch.zeros_like(obs["critic_obs"]), indicator], dim=-1)
+        actions_mean = self.policy(obs_input)
+        return actions_mean
+    
+    def to_cpu(self):
+        self.policy = deepcopy(self.policy).to('cpu')
+        self.std.to('cpu')
+
+class GPOValue(nn.Module):
+    def __init__(self,
+                obs_dim_dict,
+                module_config_dict):
+        super(GPOValue, self).__init__()
+        
+        obs_dim_dict_ = self.generate_full_obs_dict(obs_dim_dict)
+
+        self.value_module = BaseModule(obs_dim_dict_, module_config_dict)
+
+    def generate_full_obs_dict(self,obs_dim_dict):
+        actor_dim = obs_dim_dict.get("actor_obs", 0)
+        critic_dim = obs_dim_dict.get("critic_obs", 0)
+        obs_dim_dict["full_obs"] = actor_dim + critic_dim + 1
+        return obs_dim_dict
+    
+    @property
+    def value(self):
+        return self.value_module
+    
+    def reset(self, dones=None):
+        pass
+    
+    def evaluate(self, obs, **kwargs):
+        indicator = torch.ones(obs["actor_obs"].shape[:-1] + (1,), device=obs["actor_obs"].device)
+        obs_input = torch.cat([obs["actor_obs"], obs["critic_obs"], indicator], dim=-1)
+        value = self.value(obs_input)
         return value
 
-    def evaluate_both(self, critic_obs, **kwargs):
-        """评估两个critic的价值（仅在use_dual_critics=True时有效）"""
-        if not self.use_dual_critics:
-            raise ValueError("This method is only available when use_dual_critics=True")
+
+class PPOActorFixSigma(PPOActor):
+    def __init__(self,                 
+                 obs_dim_dict,
+                network_dict,
+                network_load_dict,
+                num_actions,):
+        super(PPOActorFixSigma, self).__init__(obs_dim_dict, network_dict, network_load_dict, num_actions, 0.0)
         
-        first_value = self.first_critic(critic_obs)
-        second_value = self.second_critic(critic_obs)
-        return first_value, second_value
+    def update_distribution(self, obs_dict):
+        mean = self.actor(obs_dict)['head']
+        self.distribution = mean
 
-
-class PolicyTransitionModule(nn.Module):
-    """
-    策略转换模块
-    用于在第一个策略和第二个策略之间进行信息传递和转换
-    """
+    @property
+    def action_mean(self):
+        return self.distribution
     
-    def __init__(self, 
-                 input_dim, 
-                 output_dim, 
-                 hidden_dims=[64, 32],
-                 activation='relu'):
-        super(PolicyTransitionModule, self).__init__()
-        
-        layers = []
-        prev_dim = input_dim
-        
-        for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            if activation == 'relu':
-                layers.append(nn.ReLU())
-            elif activation == 'tanh':
-                layers.append(nn.Tanh())
-            elif activation == 'elu':
-                layers.append(nn.ELU())
-            prev_dim = hidden_dim
-        
-        layers.append(nn.Linear(prev_dim, output_dim))
-        
-        self.network = nn.Sequential(*layers)
+    def get_actions_log_prob(self, actions):
+        raise NotImplementedError
+    
+    def act(self, obs_dict, **kwargs):
+        self.update_distribution(obs_dict)
+        return self.distribution
 
+class SinusoidalEmbedding(nn.Module):
+    def __init__(self, embed_dim):
+        """
+        Args:
+            embed_dim
+            max_level
+        """
+        super(SinusoidalEmbedding, self).__init__()
+        assert embed_dim % 2 == 0
+        self.embed_dim = embed_dim
+        self.max_level = (embed_dim // 2)
+        self.register_buffer("freqs", 2 ** torch.arange(self.max_level).float())
+
+    def forward(self, phase):
+        """
+        Args:
+            phase: (...,) tensor in [0, 1]
+        Returns:
+            embedding: (..., embed_dim)
+        """
+        angles = 2 * torch.pi * phase * self.freqs  # (..., max_level)
+        sin_enc = torch.sin(angles)
+        cos_enc = torch.cos(angles)
+        return torch.cat([sin_enc, cos_enc], dim=-1)  # (..., 2 * max_level)
+
+class SinusoidalEmbeddingV2(nn.Module):
+    def __init__(self, embed_dim):
+        """
+        Args:
+            embed_dim
+            max_level
+        """
+        super(SinusoidalEmbeddingV2, self).__init__()
+        assert embed_dim % 2 == 0
+        self.embed_dim = embed_dim
+        self.max_level = (embed_dim // 2)
+        self.register_buffer("freqs", 1/ (10000 ** (torch.arange(self.max_level).float()/self.max_level)))
+
+    def forward(self, phase):
+        """
+        Args:
+            phase: (...,) tensor in [0, 1]
+        Returns:
+            embedding: (..., embed_dim)
+        """
+        angles = 2 * torch.pi * phase * self.freqs  # (..., max_level)
+        sin_enc = torch.sin(angles)
+        cos_enc = torch.cos(angles)
+        return torch.cat([sin_enc, cos_enc], dim=-1)  # (..., 2 * max_level)
+
+class Identity(nn.Module):
     def forward(self, x):
-        return self.network(x)
+        return x
+
+class ModuleWithPhaseEmbedding(nn.Module):
+    def __init__(self, module, embed_type, embed_dim):
+        super(ModuleWithPhaseEmbedding, self).__init__()
+        self.embed_type = embed_type
+        self.embed_dim = embed_dim
+        self.module = module  # BaseModule
+
+        if self.embed_type == 'Original':
+            self.phase_embedder = Identity()
+            assert self.embed_dim == 1, "embed_dim should be 1 for Original embedding"
+        elif self.embed_type == 'Sinusoidal':
+            self.phase_embedder = SinusoidalEmbedding(self.embed_dim)  # Standard SinusoidalEmbedding 
+
+        elif self.embed_type == 'Learnable':
+            self.phase_embedder = nn.Sequential(nn.Linear(1, self.embed_dim*2),
+                                                nn.ReLU(),
+                                                nn.Linear(self.embed_dim*2, self.embed_dim)) # Learnable PhaseEmbedding
+            # self.phase_embedder = nn.Linear(1, self.embed_dim)  # Learnable PhaseEmbedding
+        # stay tuned
+        else:
+            raise ValueError(f"Unknown embed_type {self.embed_type}")
+        
+    def forward(self, obs):
+
+        phase = obs[..., -1:]  # assume phase is the last element in the observation
+        phase_embedding = self.phase_embedder(phase)
+        # import ipdb; ipdb.set_trace()
+        obs_input = obs[..., :-1] 
+        obs_input = torch.cat([obs_input, phase_embedding], dim=-1) 
+        
+        return self.module(obs_input)
 
 
-class AdaptiveDualPolicyActor(DualPolicyActor):
-    """
-    自适应双策略Actor
-    包含策略转换模块，可以更好地处理两个策略之间的信息传递
-    """
-    
+class PhaseAwareActor(nn.Module):
     def __init__(self,
                  obs_dim_dict,
                  module_config_dict,
                  num_actions,
                  init_noise_std,
-                 freeze_policy=True,
-                 freeze_delta=False,
-                 use_transition_module=True):
-        
-        super(AdaptiveDualPolicyActor, self).__init__(
-            obs_dim_dict=obs_dim_dict,
-            module_config_dict=module_config_dict,
-            num_actions=num_actions,
-            init_noise_std=init_noise_std,
-            freeze_policy=freeze_policy,
-            freeze_delta=freeze_delta
-        )
-        
-        self.use_transition_module = use_transition_module
-        
-        if use_transition_module:
-            # 创建策略转换模块
-            self.transition_module = PolicyTransitionModule(
-                input_dim=num_actions,
-                output_dim=num_actions,
-                hidden_dims=[64, 32]
-            )
+                 embed_type='Sinusoidal',
+                 phase_embed_dim=16): 
+        super(PhaseAwareActor, self).__init__()
 
-    def act(self, actor_obs, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        自适应双策略动作生成
-        """
-        # 主策略生成初始动作
-        policy_output = self.policy.act(actor_obs, **kwargs)
+        module_config_dict = self._process_module_config(module_config_dict, num_actions)
+       
+        # original actor_module
+        self.actor_module = BaseModule(obs_dim_dict, module_config_dict)
         
-        # 如果使用转换模块，对主策略输出进行转换
-        if self.use_transition_module:
-            transformed_policy_output = self.transition_module(policy_output)
-            combined_obs = torch.cat([actor_obs, transformed_policy_output], dim=-1)
-        else:
-            combined_obs = torch.cat([actor_obs, policy_output], dim=-1)
-        
-        # 增量策略生成最终动作
-        final_actions = self.delta.act(combined_obs, **kwargs)
-        
-        # 更新分布
-        self.distribution = self.delta.distribution
-        
-        return final_actions, policy_output
+        #  ActorWithPhaseEmbedding = actor + phase_embedder
+        self.actor_with_phase = ModuleWithPhaseEmbedding(self.actor_module, embed_type, phase_embed_dim)
+                                                        
 
-    def act_inference(self, actor_obs) -> Tuple[torch.Tensor, torch.Tensor]:
-        """推理模式的动作生成"""
-        # 主策略推理
-        policy_output = self.policy.act_inference(actor_obs)
-        
-        # 转换主策略输出
-        if self.use_transition_module:
-            transformed_policy_output = self.transition_module(policy_output)
-            combined_obs = torch.cat([actor_obs, transformed_policy_output], dim=-1)
+        # Action noise
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        self.distribution = None
+        # disable args validation for speedup
+        Normal.set_default_validate_args = False
+
+    def _process_module_config(self, module_config_dict, num_actions):
+        for idx, output_dim in enumerate(module_config_dict['output_dim']):
+            if output_dim == 'robot_action_dim':
+                module_config_dict['output_dim'][idx] = num_actions
+        return module_config_dict
+
+    @property
+    def actor(self):
+        return self.actor_with_phase
+    
+    @staticmethod
+    def init_weights(sequential, scales):
+        [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
+         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
+
+    def reset(self, dones=None):
+        pass
+
+    def forward(self, actor_obs):
+        return self.actor(actor_obs)
+    
+    @property
+    def action_mean(self):
+        return self.distribution.mean
+
+    @property
+    def action_std(self):
+        return self.distribution.stddev
+    
+    @property
+    def entropy(self):
+        return self.distribution.entropy().sum(dim=-1)
+
+    def update_distribution(self, actor_obs):
+        mean = self.actor(actor_obs)
+        self.distribution = Normal(mean, mean * 0. + self.std)
+
+    def act(self, actor_obs, **kwargs):
+        self.update_distribution(actor_obs)
+        return self.distribution.sample()
+    
+
+    def get_actions_log_prob(self, actions):
+        return self.distribution.log_prob(actions).sum(dim=-1)
+
+    def act_inference(self, actor_obs):
+        actions_mean = self.actor(actor_obs)
+        return actions_mean
+    
+    def to_cpu(self):
+        self.actor = deepcopy(self.actor).to('cpu')
+        self.std.to('cpu')
+
+
+class PhaseAwareCritic(nn.Module):
+    def __init__(self,
+                obs_dim_dict,
+                module_config_dict,
+                embed_type = 'Sinusoidal',
+                phase_embed_dim=16):
+        super(PhaseAwareCritic, self).__init__()
+
+        self.critic_module = BaseModule(obs_dim_dict, module_config_dict)
+
+        self.critic_with_phase = ModuleWithPhaseEmbedding(self.critic_module,embed_type, phase_embed_dim)
+
+    @property
+    def critic(self):
+        return self.critic_with_phase
+    
+    def reset(self, dones=None):
+        pass
+    
+    def evaluate(self, critic_obs, **kwargs):
+        value = self.critic(critic_obs)
+        return value
+
+
+
+class PhaseEmbeddingModuleV2(nn.Module):
+    def __init__(self, phase_pos:List[int], embed_type: str, embed_dim: int):
+        super(PhaseEmbeddingModuleV2, self).__init__()
+        self.phase_pos = phase_pos
+        self.embed_type = embed_type
+        self.embed_dim = embed_dim
+
+        if self.embed_type == 'Original':
+            raise ValueError("Original embedding is not valid for PhaseEmbeddingModuleV2")
+        elif self.embed_type == 'Sinusoidal':
+            self.phase_embedder = SinusoidalEmbedding(self.embed_dim)  # Standard SinusoidalEmbedding 
+        elif self.embed_type == 'SinusoidalV2':
+            self.phase_embedder = SinusoidalEmbeddingV2(self.embed_dim)  # Standard SinusoidalEmbedding 
+
+        elif self.embed_type == 'Learnable':
+            self.phase_embedder = nn.Sequential(nn.Linear(1, self.embed_dim*2),
+                                                nn.ReLU(),
+                                                nn.Linear(self.embed_dim*2, self.embed_dim)) # Learnable PhaseEmbedding
         else:
-            combined_obs = torch.cat([actor_obs, policy_output], dim=-1)
+            raise ValueError(f"Unknown embed_type {self.embed_type}")
         
-        # 增量策略推理
-        final_actions = self.delta.act_inference(combined_obs)
+    def forward(self, obs):
+        # Extract phases at specified positions using tensor indexing
+        phases = obs[..., self.phase_pos].unsqueeze(-1)  # Shape: [..., num_phases, 1]
         
-        return final_actions, policy_output 
+        # Embed all phases at once
+        phase_embeddings = self.phase_embedder(phases)  # Shape: [..., num_phases, embed_dim]
+        
+        # Reshape embeddings to combine all phase embeddings
+        combined_embedding = phase_embeddings.reshape(*phases.shape[:-2], -1)  # Shape: [..., num_phases * embed_dim]
+        
+        
+        # Concatenate observation with phase embeddings
+        obs_with_pe = torch.cat([obs, combined_embedding], dim=-1)
+        print(f"DEBUG: {self.phase_pos=}  \t| {phases[:5].squeeze()=} \t| {obs_with_pe.shape=}")
+        return obs_with_pe
+
+class PhaseAwareActorV2(PPOActor):
+    def __init__(self,
+                 obs_dim_dict,
+                 module_config_dict,
+                 num_actions,
+                 init_noise_std,
+                 actor_phase_pos:int,
+                 phase_embed_type:str,
+                 phase_embed_dim:int):
+        obs_dim_with_pe = obs_dim_dict['actor_obs'] + phase_embed_dim
+        super(PhaseAwareActorV2, self).__init__({
+            'actor_obs': obs_dim_with_pe
+        }, module_config_dict, num_actions, init_noise_std)
+        
+        # Create phase embedding module
+        self.phase_embedder = PhaseEmbeddingModuleV2([actor_phase_pos], phase_embed_type, phase_embed_dim)
+        
+        # Create actor module with phase embedding
+        self.actor_with_phase = nn.Sequential(self.phase_embedder, self.actor_module)
+
+    @property
+    def actor(self):
+        return self.actor_with_phase
+
+class PhaseAwareCriticV2(PPOCritic):
+    def __init__(self,
+                 obs_dim_dict,
+                 module_config_dict,
+                 critic_phase_pos:int,
+                 phase_embed_type:str,
+                 phase_embed_dim:int):
+        obs_dim_with_pe = obs_dim_dict['critic_obs'] + phase_embed_dim
+        super(PhaseAwareCriticV2, self).__init__({
+            'critic_obs': obs_dim_with_pe
+        }, module_config_dict)
+        
+        # Create phase embedding module
+        self.phase_embedder = PhaseEmbeddingModuleV2([critic_phase_pos], phase_embed_type, phase_embed_dim)
+        
+        # Create critic module with phase embedding
+        self.critic_with_phase = nn.Sequential(self.phase_embedder, self.critic_module)
+
+    @property
+    def critic(self):
+        return self.critic_with_phase
