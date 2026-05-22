@@ -40,9 +40,7 @@ setup(
         'mink',
         'quadprog',
         'einops',
-        "chumpy"
-    ],
-    dependency_links=[
-        'git+ssh://git@github.com/ZhengyiLuo/SMPLSim.git@master#egg=SMPLSim'
+        "chumpy",
+        "smpl-sim @ git+ssh://git@github.com/ZhengyiLuo/SMPLSim.git@master",
     ]
 )

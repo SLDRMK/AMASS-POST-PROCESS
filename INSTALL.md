@@ -24,6 +24,12 @@ cd ../../..
 
 
 # Install PBHC
+# Use SSH for GitHub dependencies. Some transitive dependencies of SMPLSim
+# are declared with HTTPS URLs, so this temporary Git rewrite avoids HTTPS
+# clone timeouts without changing the global git config.
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=url.ssh://git@github.com/.insteadOf \
+GIT_CONFIG_VALUE_0=https://github.com/ \
 pip install -e .
 pip install -e humanoidverse/isaac_utils
 

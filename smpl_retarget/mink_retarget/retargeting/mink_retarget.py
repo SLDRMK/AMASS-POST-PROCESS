@@ -22,6 +22,7 @@ from smpl_sim.smpllib.smpl_joint_names import (
 )
 
 import mink
+from mink.tasks.task import Task
 from mink.utils import get_body_geom_ids
 from poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState, SkeletonTree
 
@@ -437,38 +438,105 @@ def create_skeleton_motion(
     return SkeletonMotion.from_skeleton_state(new_sk_state, fps=mocap_fr)
 
 
-# 定义父子关节对（基于G1机器人的运动链）
+# World axes; torso upright uses body +Z in world projected onto XY (small-angle surrogate for 1 - <u, e_z>).
+_WORLD_EX = np.array([1.0, 0.0, 0.0], dtype=float)
+_WORLD_EY = np.array([0.0, 1.0, 0.0], dtype=float)
+
+# Robot-specific scalar on SMPL edge length ‖p_child - p_parent‖ for relative positional targets (not fixed 0.3m).
+_RELATIVE_BONE_LENGTH_SCALAR = {
+    "h1": 1.0,
+    "g1": 1.0,
+}
+
+# Bodies encouraged to keep local +Z aligned with world +Z (reduces torso hunch / forward lean).
+TORSO_UPRIGHT_BODIES = {
+    "g1": ["pelvis", "torso_link", "head"],
+    "h1": ["pelvis", "torso_link", "head"],
+}
+
+# Torso upright cost scaling (applied per 2×n_bodies residual rows). Tune with posture / global tasks.
+TORSO_UPRIGHT_SCALE = 3.0
+
+
+class TorsoUprightTask(Task):
+    """Encourage torso / head / pelvis local +Z axis to align with world +Z.
+
+    Per body, error rows are [ u·e_x, u·e_y ] where u is body +Z expressed in world
+    frames (matching small-angle penalty of 1 - <u,e_z> for nearly upright poses).
+    """
+
+    def __init__(
+        self,
+        model,
+        body_ids: Sequence[int],
+        cost_per_row: float = 1.0,
+        gain: float = 1.0,
+        lm_damping: float = 0.0,
+    ):
+        if not body_ids:
+            raise ValueError("TorsoUprightTask requires at least one valid body id")
+        k = 2 * len(body_ids)
+        super().__init__(
+            cost=np.full((k,), cost_per_row, dtype=float),
+            gain=gain,
+            lm_damping=lm_damping,
+        )
+        self.model = model
+        self.body_ids = list(body_ids)
+        self.k = k
+
+    def compute_error(self, configuration):
+        errs = []
+        for bid in self.body_ids:
+            r = configuration.data.xmat[bid].reshape(3, 3)
+            u_world = r[:, 2].copy()
+            errs.extend([float(np.dot(u_world, _WORLD_EX)), float(np.dot(u_world, _WORLD_EY))])
+        return np.asarray(errs, dtype=float)
+
+    def compute_jacobian(self, configuration):
+        jac = np.zeros((self.k, configuration.model.nv), dtype=float)
+        jac_tmp_p = np.empty((3, configuration.model.nv))
+        jac_tmp_r = np.empty((3, configuration.model.nv))
+        row = 0
+        for bid in self.body_ids:
+            r = configuration.data.xmat[bid].reshape(3, 3)
+            u_world = r[:, 2].copy()
+            mujoco.mj_jacBody(
+                self.model, configuration.data, jac_tmp_p, jac_tmp_r, bid
+            )
+            # d/dt(u·ei) = (ω×u)·ei = ω·(u×ei); ω = jac_r @ qvel
+            v_x = np.cross(u_world, _WORLD_EX)
+            v_y = np.cross(u_world, _WORLD_EY)
+            jac[row, :] = v_x @ jac_tmp_r
+            jac[row + 1, :] = v_y @ jac_tmp_r
+            row += 2
+        return jac
+
+
+# 各类优化目标的全局缩放权重（L = wg L_global + wr L_relative + wp L_posture + wt L_torso）
+ROOT_POSITION_SCALE = 0.3      # 根关节全局位置权重缩放
+ROOT_ORIENTATION_SCALE = 0.3   # 根关节全局旋转权重缩放
+OTHER_POSITION_SCALE = 1.0     # 其他关节全局位置权重缩放
+OTHER_ORIENTATION_SCALE = 1.0  # 其他关节全局旋转权重缩放
+RELATIVE_POSITION_SCALE = 0.35  # 相对位置权重（降低过强的相对 kinematics）
+RELATIVE_ORIENTATION_SCALE = 0.2  # 相对朝向权重（应明显弱于 posture，见 posture scale）
+POSTURE_SCALE = 0.5             # 鼓励接近默认人机自然站立姿态
+
+# 定义父子关节对（基于 G1 运动链；h1 若缺 body 名会在循环中跳过）
 PARENT_CHILD_PAIRS = [
-    # 躯干链
     ("pelvis", "head"),
-    
-    # 左臂链
     ("left_shoulder_pitch_link", "left_elbow_link"),
     ("left_elbow_link", "left_wrist_yaw_link"),
-    
-    # 右臂链
     ("right_shoulder_pitch_link", "right_elbow_link"),
     ("right_elbow_link", "right_wrist_yaw_link"),
-    
-    # 左腿链
     ("left_hip_yaw_link", "left_knee_link"),
     ("left_knee_link", "left_ankle_roll_link"),
     ("left_ankle_roll_link", "left_toe_link"),
-    
-    # 右腿链
     ("right_hip_yaw_link", "right_knee_link"),
     ("right_knee_link", "right_ankle_roll_link"),
     ("right_ankle_roll_link", "right_toe_link"),
 ]
 
-# 各类优化目标的全局缩放权重，方便调试
-ROOT_POSITION_SCALE = 0.3      # 根关节全局位置权重缩放
-ROOT_ORIENTATION_SCALE = 0.3   # 根关节全局旋转权重缩放
-OTHER_POSITION_SCALE = 1.0     # 其他关节全局位置权重缩放
-OTHER_ORIENTATION_SCALE = 1.0  # 其他关节全局旋转权重缩放
-RELATIVE_POSITION_SCALE = 1.0  # 相对位置约束权重缩放
-RELATIVE_ORIENTATION_SCALE = 1.0  # 相对旋转约束权重缩放
-POSTURE_SCALE = 1.0           # 姿态稳定权重缩放
 
 def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str, render: bool = False):
     global_translations = global_trans.numpy()
@@ -553,6 +621,21 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
 
     posture_task = mink.PostureTask(model, cost=POSTURE_SCALE)
     tasks.append(posture_task)
+
+    torso_body_ids = []
+    for bname in TORSO_UPRIGHT_BODIES.get(robot_type, ("pelvis", "head")):
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, bname)
+        if bid != -1:
+            torso_body_ids.append(bid)
+    if torso_body_ids:
+        tasks.append(
+            TorsoUprightTask(
+                model=model,
+                body_ids=torso_body_ids,
+                cost_per_row=TORSO_UPRIGHT_SCALE,
+                lm_damping=1.0,
+            )
+        )
 
     # Prepare MuJoCo model and data
     model = configuration.model
@@ -677,32 +760,39 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
                     parent_idx = smplx_mujoco_joint_names.index(parent_smpl_name)
                     child_idx = smplx_mujoco_joint_names.index(child_smpl_name)
                     
-                    # 计算SMPL数据中的相对方向向量
+                    # 世界系下骨向量，再用父关节朝向变到「父坐标系」中表达相对方向（与机器人侧 xmat 约定一致）。
                     parent_pos = global_translations[max(0, t), parent_idx]
                     child_pos = global_translations[max(0, t), child_idx]
-                    relative_dir = child_pos - parent_pos
-                    
-                    # 归一化相对方向向量，只保留方向信息，不考虑距离
-                    relative_dir_norm = np.linalg.norm(relative_dir)
-                    if relative_dir_norm > 1e-6:  # 避免除零错误
-                        relative_dir_unit = relative_dir / relative_dir_norm
+                    delta_w = child_pos - parent_pos
+
+                    bone_len_world = np.linalg.norm(delta_w)
+                    parent_rot_smpl = pose_quat_global[max(0, t), parent_idx].copy()
+                    r_pw = sRot.from_quat(parent_rot_smpl).as_matrix()
+                    delta_parent = r_pw.T @ delta_w
+
+                    bone_scalar = float(_RELATIVE_BONE_LENGTH_SCALAR.get(robot_type, 1.0))
+                    # 骨骼长度用语义上的欧氏 ‖δ‖（与帧无关）；单位方向在父局部系中取。
+                    dn = np.linalg.norm(delta_parent)
+                    if dn > 1e-6:
+                        relative_dir_unit_parent = delta_parent / dn
+                        smpl_bone_length = bone_len_world
                     else:
-                        relative_dir_unit = np.array([0.0, 0.0, 1.0])  # 默认向上方向
-                    
-                    # 设定一个固定的距离长度（可以根据机器人尺寸调整）
-                    fixed_distance = 0.3  # 30cm，可以根据需要调整
-                    relative_dir_scaled = relative_dir_unit * fixed_distance
-                    
-                    # 应用缩放因子
+                        relative_dir_unit_parent = np.array([0.0, 0.0, 1.0])
+                        smpl_bone_length = 0.0
+
+                    edge_length = bone_scalar * smpl_bone_length
+                    relative_offset_parent = relative_dir_unit_parent * edge_length
+
                     if robot_type in _RESCALE_FACTOR:
-                        relative_dir_scaled *= _RESCALE_FACTOR[robot_type]
-                    
-                    # 获取当前机器人父关节的实际位置
+                        relative_offset_parent *= _RESCALE_FACTOR[robot_type]
+
                     parent_body_id = model.body(parent_name).id
                     current_parent_pos = data.xpos[parent_body_id].copy()
-                    
-                    # 计算目标子关节位置（当前父关节位置 + 归一化的相对方向向量）
-                    child_target_pos = current_parent_pos + relative_dir_scaled
+                    r_robot_pw = data.xmat[parent_body_id].reshape(3, 3)
+
+                    child_target_pos = (
+                        current_parent_pos + r_robot_pw @ relative_offset_parent
+                    )
                     
                     # 计算SMPL数据中的相对旋转
                     parent_rot = pose_quat_global[max(0, t), parent_idx].copy()
@@ -713,9 +803,8 @@ def retarget_fit_motion(global_trans, pose_quat_global, mo_fps, robot_type: str,
                     child_rot_obj = sRot.from_quat(child_rot)
                     relative_rot = child_rot_obj * parent_rot_obj.inv()
                     
-                    # 获取当前机器人父关节的实际姿态
-                    current_parent_rot_matrix = data.xmat[parent_body_id].reshape(3, 3)
-                    current_parent_rot_obj = sRot.from_matrix(current_parent_rot_matrix)
+                    # 机器人父连杆姿态（与同帧 xmat 一致，用于施加 SMPL 相对旋转）
+                    current_parent_rot_obj = sRot.from_matrix(r_robot_pw)
                     
                     # 将SMPL相对旋转应用到当前机器人父关节上
                     child_target_rot_obj = relative_rot * current_parent_rot_obj
